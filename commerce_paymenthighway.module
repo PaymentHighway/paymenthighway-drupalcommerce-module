@@ -1,0 +1,442 @@
+<?php
+
+require_once("paymenthighway/vendor/autoload.php");
+
+use \Solinor\PaymentHighway\FormBuilder;
+use \Solinor\PaymentHighway\PaymentApi;
+use \Solinor\PaymentHighway\Security\SecureSigner;
+
+/**
+ * Define constants.
+ *
+ */
+define('PH_TEST_KEY', 'testKey');
+define('PH_TEST_SECRET', 'testSecret');
+define('PH_TEST_ACCOUNT', 'test');
+define('PH_TEST_MERCHANT', 'test_merchantId');
+define('PH_TEST_BASE_URL', 'https://v1-hub-staging.sph-test-solinor.com');
+define('PH_DEFAULT_LANGUAGE', 'EN');
+define('PH_DEFAULT_RETURN_SUCCESS', 'checkout/!order_id/payment/return/!payment_redirect_key/success');
+define('PH_DEFAULT_RETURN_CANCEL', 'checkout/!order_id/payment/return/!payment_redirect_key/cancel');
+define('PH_DEFAULT_RETURN_FAILURE', 'commerce_paymenthighway_notify/!order_id/!payment_redirect_key');
+
+
+function _write_ph_log($str)
+{
+  file_put_contents('/Users/kostersson/work/virta/phlog', $str . "\n", FILE_APPEND);
+}
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_paymenthighway_menu()
+{
+  $items['commerce_paymenthighway_notify/%/%'] = array(
+    'page callback' => 'commerce_paymenthighway_notify_check',
+    'page arguments' => array(1, 2),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_paymenthighway_commerce_payment_method_info()
+{
+  $payment_methods = array();
+
+  $payment_methods['commerce_paymenthighway'] = array(
+    'title' => t('Payment Highway'),
+    'active' => TRUE,
+    'terminal' => FALSE,
+    'offsite' => TRUE,
+    'offsite_autoredirect' => TRUE,
+    'callbacks' => array(
+      'settings_form' => 'commerce_paymenthighway_settings_form',
+    ),
+  );
+
+  return $payment_methods;
+}
+
+
+/**
+ * Payment method callback; return the settings form for a payment method.
+ *
+ * @param array $settings
+ *   An array of the current settings.
+ *
+ * @return array
+ *   Settings form.
+ */
+function commerce_paymenthighway_settings_form($settings = array())
+{
+  $form = array();
+
+  $form['signature_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Signature key'),
+    '#description' => t('Signature key provided by Payment Highway. <em>testKey</em> is for testing.'),
+    '#default_value' => !empty($settings['signature_key']) ? $settings['signature_key'] : PH_TEST_KEY,
+  );
+
+  $form['signature_secret'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Signature secret'),
+    '#description' => t('Signature secret provided by Payment Highway. <em>testSecret</em> is for testing.'),
+    '#default_value' => !empty($settings['signature_secret']) ? $settings['signature_secret'] : PH_TEST_SECRET,
+  );
+
+  $form['account'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Account'),
+    '#description' => t('Account ID provided by Payment Highway. <em>test</em> is for testing.'),
+    '#default_value' => !empty($settings['account']) ? $settings['account'] : PH_TEST_ACCOUNT,
+  );
+
+  $form['merchant'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Merchant'),
+    '#description' => t('Merchant ID provided by Payment Highway. <em>test_merchantId</em> is for testing.'),
+    '#default_value' => !empty($settings['merchant']) ? $settings['merchant'] : PH_TEST_MERCHANT,
+  );
+
+  $form['base_url'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Base url'),
+    '#description' => t('Payment Highway base url. <em>https://v1-hub-staging.sph-test-solinor.com</em> is for testing.'),
+    '#default_value' => !empty($settings['base_url']) ? $settings['base_url'] : PH_TEST_BASE_URL,
+  );
+
+  $form['language'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Language'),
+    '#description' => t('Payment Highway form language. (e.g. EN or FI'),
+    '#default_value' => !empty($settings['language']) ? $settings['language'] : PH_DEFAULT_LANGUAGE,
+  );
+
+  $form['advanced'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Advanced'),
+    '#description' => t('<strong>Note:</strong> Change these options only if you really know what you are doing!'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+
+  $form['advanced']['return_success'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Return address (success)'),
+    '#description' => t('<strong>Available variables:</strong> !order_id, !payment_redirect_key<br /><strong>Default value:</strong> <em>checkout/!order_id/payment/return/!payment_redirect_key/success</em>'),
+    '#default_value' => !empty($settings['advanced']['return_success']) ? $settings['advanced']['return_success'] : PH_DEFAULT_RETURN_SUCCESS,
+  );
+
+  $form['advanced']['return_cancel'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Return address (cancel)'),
+    '#description' => t('<strong>Available variables:</strong> !order_id, !payment_redirect_key<br /><strong>Default value:</strong> <em>checkout/!order_id/payment/return/!payment_redirect_key/cancel</em>'),
+    '#default_value' => !empty($settings['advanced']['return_cancel']) ? $settings['advanced']['return_cancel'] : PH_DEFAULT_RETURN_CANCEL,
+  );
+
+  $form['advanced']['return_failure'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Return address (failure)'),
+    '#description' => t('<strong>Available variables:</strong> !order_id, !payment_redirect_key<br /><strong>Default value:</strong> <em>commerce_paymenthighway_notify/!order_id/!payment_redirect_key</em>'),
+    '#default_value' => !empty($settings['advanced']['return_failure']) ? $settings['advanced']['return_failure'] : PH_DEFAULT_RETURN_FAILURE,
+  );
+
+  return $form;
+}
+
+/**
+ * Return payment method settings.
+ *
+ * @param string $setting_name
+ *   The name of the setting.
+ * @param array $payment_method
+ *   The payment method array.
+ *
+ * @return string
+ *   The value of the specified setting.
+ */
+function _commerce_paymenthighway_get_setting($setting_name, $payment_method = NULL)
+{
+  $setting = FALSE;
+
+  switch ($setting_name) {
+    case 'signature_key':
+      $setting = !empty($payment_method['settings']['signature_key']) ? $payment_method['settings']['signature_key'] : PH_TEST_KEY;
+      break;
+
+    case 'signature_secret':
+      $setting = !empty($payment_method['settings']['signature_secret']) ? $payment_method['settings']['signature_secret'] : PH_TEST_SECRET;
+      break;
+
+    case 'account':
+      $setting = !empty($payment_method['settings']['account']) ? $payment_method['settings']['account'] : PH_TEST_ACCOUNT;
+      break;
+
+    case 'merchant':
+      $setting = !empty($payment_method['settings']['merchant']) ? $payment_method['settings']['merchant'] : PH_TEST_MERCHANT;
+      break;
+
+    case 'base_url':
+      $setting = !empty($payment_method['settings']['base_url']) ? $payment_method['settings']['base_url'] : PH_TEST_BASE_URL;
+      break;
+
+    case 'language':
+      $setting = !empty($payment_method['settings']['language']) ? $payment_method['settings']['language'] : PH_DEFAULT_LANGUAGE;
+      break;
+
+    case 'return_success':
+      $setting = !empty($payment_method['settings']['advanced']['return_success']) ? $payment_method['settings']['advanced']['return_success'] : PH_DEFAULT_RETURN_SUCCESS;
+      break;
+
+    case 'return_cancel':
+      $setting = !empty($payment_method['settings']['advanced']['return_cancel']) ? $payment_method['settings']['advanced']['return_cancel'] : PH_DEFAULT_RETURN_CANCEL;
+      break;
+
+    case 'return_failure':
+      $setting = !empty($payment_method['settings']['advanced']['return_failure']) ? $payment_method['settings']['advanced']['return_failure'] : PH_DEFAULT_RETURN_FAILURE;
+      break;
+
+  }
+
+  return $setting;
+}
+
+/**
+ * Payment method callback; submission callback for the payment submission form.
+ *
+ * @param array $payment_method
+ *   The payment method instance object used to charge this payment.
+ * @param array $pane_form
+ *   Checkout pane form array.
+ * @param array $pane_values
+ *   Checkout pane values.
+ * @param object $order
+ *   The order object the payment applies to.
+ * @param array $charge
+ *   An array indicating the amount and currency code to charge.
+ */
+function commerce_paymenthighway_submit_form_submit($payment_method, $pane_form, $pane_values, $order, $charge)
+{
+  $order->data['commerce_paymenthighway'] = $pane_values;
+
+  $transaction = commerce_paymenthighway_transaction($payment_method, $order, $charge);
+  $order->data['commerce_paymenthighway']['transaction'] = $transaction;
+}
+
+/**
+ * Creates a payment transaction.
+ *
+ * @param array $payment_method
+ *   The payment method instance object used to charge this payment.
+ * @param object $order
+ *   The order object the payment applies to.
+ * @param array $charge
+ *   An array indicating the amount and currency code to charge.
+ *
+ * @return object
+ *   The transaction object.
+ */
+function commerce_paymenthighway_transaction($payment_method, $order, $charge)
+{
+  $transaction = commerce_payment_transaction_new('commerce_paymenthighway', $order->order_id);
+  $transaction->instance_id = $payment_method['instance_id'];
+  $transaction->amount = $charge['amount'];
+  $transaction->currency_code = $charge['currency_code'];
+  $transaction->status = COMMERCE_PAYMENT_STATUS_PENDING;
+
+  commerce_payment_transaction_save($transaction);
+
+  return $transaction;
+}
+
+
+/**
+ * Payment method callback; generation callback for the payment redirect form.
+ *
+ * @param array $form
+ *   The form array.
+ * @param array $form_state
+ *   The form state array.
+ * @param object $order
+ *   The order object the payment applies to.
+ * @param array $payment_method
+ *   The payment method instance object used to charge this payment.
+ *
+ * @return array
+ *   The redirect form.
+ */
+function commerce_paymenthighway_redirect_form($form, &$form_state, $order, $payment_method)
+{
+  if (empty($payment_method['settings']['merchant'])) {
+    drupal_set_message(t('You have not configured Payment Highway payments. Using test credentials. !link.', array('!link' => l(t('Add configuration'), 'admin/commerce/config/payment-methods/manage/commerce_payment_commerce_paymenthighway/edit/3'))));
+  }
+
+  if (!empty($payment_method['offsite_autoredirect'])) {
+    $form['#attached']['js'][] = drupal_get_path('module', 'commerce_payment') . '/commerce_payment.js';
+  }
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $order_total = $order_wrapper->commerce_order_total->amount->value();
+
+  _write_ph_log(print_r($order_wrapper->commerce_order_total->amount, true));
+  $method = "POST";
+  $signatureKeyId = _commerce_paymenthighway_get_setting('signature_key', $payment_method);
+  $signatureSecret = _commerce_paymenthighway_get_setting('signature_secret', $payment_method);
+  $account = _commerce_paymenthighway_get_setting('account', $payment_method);
+  $merchant = _commerce_paymenthighway_get_setting('merchant', $payment_method);
+  $baseUrl = _commerce_paymenthighway_get_setting('base_url', $payment_method);
+  $successUrl = _commerce_paymenthighway_generate_url('return_success', $order, $payment_method);
+  $failureUrl = _commerce_paymenthighway_generate_url('return_failure', $order, $payment_method);
+  $cancelUrl = _commerce_paymenthighway_generate_url('return_cancel', $order, $payment_method);
+  $language = _commerce_paymenthighway_get_setting('language', $payment_method);
+
+
+  $formBuilder = new FormBuilder($method, $signatureKeyId, $signatureSecret, $account,
+    $merchant, $baseUrl, $successUrl, $failureUrl,
+    $cancelUrl, $language);
+
+
+  $formContainer = $formBuilder->generatePaymentParameters($order_total, 'EUR', $order->order_id, "");
+
+  // Build the form array.
+  $form = array();
+  $form['#action'] = $formContainer->getAction();
+
+  foreach ($formContainer->getParameters() as $key => $value) {
+    $form[$key] = array(
+      '#type' => 'hidden',
+      '#value' => $value,
+    );
+  }
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit Order'),
+    '#weight' => 10,
+    '#suffix' => l(t('Cancel'), 'checkout/' . $order->order_id . '/payment/back/' . $order->data['payment_redirect_key'], array('absolute' => TRUE)),
+  );
+
+  return $form;
+}
+
+
+/**
+ * Generate return urls
+ *
+ * @param $mode
+ * @param $order
+ * @param $payment_method
+ * @return string
+ */
+function _commerce_paymenthighway_generate_url($mode, $order, $payment_method)
+{
+  $params = array(
+    '!order_id' => $order->order_id,
+    '!payment_redirect_key' => $order->data['payment_redirect_key'],
+  );
+  $url = _commerce_paymenthighway_get_setting($mode, $payment_method);
+  return url(strtr($url, $params), array('absolute' => TRUE));
+}
+
+/**
+ * Payment method callback; validation callback for redirected payments.
+ *
+ * Gets called when user comes back from offsite payment.
+ *
+ * @param object $order
+ *   The order object the payment applies to.
+ * @param array $payment_method
+ *   The payment method instance object used to charge this payment.
+ *
+ * @return bool
+ *   TRUE if valid, FALSE if validation failed.
+ */
+function commerce_paymenthighway_redirect_form_validate($order, $payment_method)
+{
+
+  $signatureKeyId = _commerce_paymenthighway_get_setting('signature_key', $payment_method);
+  $signatureSecret = _commerce_paymenthighway_get_setting('signature_secret', $payment_method);
+  $baseUrl = _commerce_paymenthighway_get_setting('base_url', $payment_method);
+  $account = _commerce_paymenthighway_get_setting('account', $payment_method);
+  $merchant = _commerce_paymenthighway_get_setting('merchant', $payment_method);
+
+  $secureSigner = new SecureSigner($signatureKeyId, $signatureSecret);
+  $paymentApi = new PaymentApi($baseUrl, $signatureKeyId, $signatureSecret, $account, $merchant);
+
+  $failure = FALSE;
+
+  if ($order = commerce_order_load($order->order_id)) {
+    $order->data['commerce_paymenthighway']['response'] = $_REQUEST;
+    commerce_order_save($order);
+  }
+
+  if (arg(5) == 'success') {
+    $response = $order->data['commerce_paymenthighway']['response'];
+
+    try {
+      $secureSigner->validateFormRedirect($_REQUEST);
+    } catch (Exception $e) {
+      drupal_set_message(t('Validation failed (security hash mismatch). Please contact store administration if the problem persists.'), 'error');
+      $failure = TRUE;
+    }
+  } elseif (arg(5) == 'cancel') {
+    $failure = TRUE;
+  } // If return status is unknown.
+  else {
+    $failure = TRUE;
+  }
+
+  if ($failure) {
+    _commerce_paymenthighway_process_failure($order);
+    return FALSE;
+  }
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $order_total = $order_wrapper->commerce_order_total->amount->value();
+  $order_currency = $order_wrapper->commerce_order_total->currency_code->value();
+  $transaction_id = $_REQUEST['sph-transaction-id'];
+  try {
+    $paymentApi->commitFormTransaction($transaction_id, $order_total, $order_currency);
+  } catch (Exception $e) {
+    drupal_set_message(t('Commit failed. Please contact store administration if the problem persists.'), 'error');
+    _commerce_paymenthighway_process_failure($order);
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+/**
+ * Process payment failure
+ *
+ * @param $order
+ */
+function _commerce_paymenthighway_process_failure($order)
+{
+  $transaction = commerce_payment_transaction_load($order->data['commerce_paymenthighway']['transaction']->transaction_id);
+  $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+  commerce_payment_transaction_save($transaction);
+}
+
+/**
+ * Payment method callback; submission callback for redirected payments.
+ *
+ * @param object $order
+ *   The order object the payment applies to.
+ * @param array $payment_method
+ *   The payment method instance object used to charge this payment.
+ */
+function commerce_paymenthighway_redirect_form_submit($order, $payment_method)
+{
+  $return_type = arg(5);
+  if ($return_type == 'success') {
+
+    $transaction = commerce_payment_transaction_load($order->data['commerce_paymenthighway']['transaction']->transaction_id);
+    $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+    commerce_payment_transaction_save($transaction);
+  }
+}

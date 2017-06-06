@@ -1,0 +1,22 @@
+name = Commerce Payment Highway
+description = Integrates Payment Highway payments with Drupal Commerce.
+core = 7.x
+package = Commerce (contrib)
+
+dependencies[] = commerce
+dependencies[] = commerce_payment
+dependencies[] = commerce_order
+dependencies[] = commerce_line_item
+dependencies[] = commerce_checkout
+dependencies[] = commerce_product_reference
+dependencies[] = commerce_product_pricing
+dependencies[] = commerce_price
+dependencies[] = entity
+dependencies[] = rules
+
+
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_paymenthighway"
+datestamp = "1479732760"
+
